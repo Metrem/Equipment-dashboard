@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as stimport streamlit as st
 import pandas as pd
 import numpy as np
 import re
@@ -7,6 +7,7 @@ import altair as alt
 import os
 
 HISTORY_FILE = "history.csv"
+DEFAULT_FILE = "data.xlsx"  # Excel included in your repo
 
 # ---------------------------
 # Utilities
@@ -99,12 +100,26 @@ trend_x_axis = st.sidebar.radio("X-axis for trend", ["Snapshot Date", "Run hours
 # ---------------------------
 st.title("📊 Equipment Dashboard")
 
-if not uploaded_file:
-    st.info("Upload an Excel workbook using the sidebar to begin.")
+# ---------------------------
+# Determine Excel source
+# ---------------------------
+if uploaded_file:
+    excel_to_use = uploaded_file
+    st.info("Using uploaded Excel file.")
+elif os.path.exists(DEFAULT_FILE):
+    excel_to_use = DEFAULT_FILE
+    st.info(f"Using default Excel from repo: {DEFAULT_FILE}")
 else:
+    excel_to_use = None
+    st.warning("No Excel file found. Upload via sidebar or add 'data.xlsx' to repo.")
+
+# ---------------------------
+# Only proceed if Excel exists
+# ---------------------------
+if excel_to_use:
     combined_rows = []
     try:
-        xls = pd.ExcelFile(uploaded_file)
+        xls = pd.ExcelFile(excel_to_use)
         all_sheets = xls.sheet_names
     except:
         all_sheets = []
@@ -115,7 +130,7 @@ else:
     if selected_sheets:
         for sheet_name in selected_sheets:
             try:
-                df = pd.read_excel(uploaded_file, sheet_name=sheet_name, dtype=object)
+                df = pd.read_excel(excel_to_use, sheet_name=sheet_name, dtype=object)
             except:
                 continue
             if df is None or df.empty:
@@ -139,9 +154,7 @@ else:
                 if c and c in df.columns:
                     df[c] = pd.to_numeric(df[c], errors="coerce")
 
-            # ---------------------------
             # Safe Date Parsing
-            # ---------------------------
             possible_date_cols = ["Date", "Snapshot Date", "Date Recorded", "Reading Date", "Date/Time"]
             found_date_col = next((col for col in possible_date_cols if col in df.columns), None)
 
@@ -157,9 +170,7 @@ else:
                 if c and c in df.columns:
                     df[c] = df[c].ffill().bfill()
 
-            # ---------------------------
             # Summary per equipment
-            # ---------------------------
             summary_df = df.groupby("Equipment").tail(1)
             sheet_canon = pd.DataFrame(index=summary_df.index)
             sheet_canon["Equipment"] = summary_df["Equipment"]
@@ -169,8 +180,6 @@ else:
             sheet_canon["Oil Level"] = summary_df.get(oil_level_col, "")
             sheet_canon["Oil Leakage"] = summary_df.get(oil_leak_col, "")
             sheet_canon["Hours Left"] = (sheet_canon.get(next_col, 0) - sheet_canon.get(run_col, 0)).round(2)
-
-            # Add readable Date column
             sheet_canon["Snapshot Date"] = summary_df["Snapshot Date"]
             sheet_canon["Date"] = summary_df["Snapshot Date"].dt.date
 
