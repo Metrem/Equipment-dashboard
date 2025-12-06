@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+re
+datetime
+date, datetime
+altair
+os
