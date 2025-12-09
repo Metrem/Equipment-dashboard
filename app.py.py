@@ -8,7 +8,7 @@ import os
 import io
 
 HISTORY_FILE = "history.csv"
-DEFAULT_FILE = "data.xlsx"  # Excel included in your repo
+DEFAULT_FILE = "data.xlsx"  # Primary Excel in repo
 
 # ---------------------------
 # Utilities
@@ -77,7 +77,7 @@ def standardize_columns(df):
 # Sidebar Options
 # ---------------------------
 st.sidebar.title("Excel Dashboard Options")
-uploaded_file = st.sidebar.file_uploader("Upload your Excel workbook", type=["xlsx", "xls"])
+uploaded_file = st.sidebar.file_uploader("Upload your Excel workbook (optional)", type=["xlsx", "xls"])
 save_history = st.sidebar.checkbox("Save snapshot to history.csv (archive)", value=False)
 
 with st.sidebar.expander("Thresholds (hidden)"):
@@ -102,37 +102,37 @@ trend_x_axis = st.sidebar.radio("X-axis for trend", ["Snapshot Date", "Run hours
 st.title("📊 Equipment Dashboard")
 
 # ---------------------------
-# Determine Excel source (works on Streamlit Cloud)
+# Excel file helper
 # ---------------------------
-excel_bytes = None
-if uploaded_file is not None:
-    try:
-        # read uploaded file bytes once
-        excel_bytes = uploaded_file.read()
-        st.info("Using uploaded Excel file.")
-    except Exception as e:
-        st.error(f"Error reading uploaded file: {e}")
-        excel_bytes = None
-
-if excel_bytes is None and os.path.exists(DEFAULT_FILE):
-    st.info(f"Using default Excel from repo: {DEFAULT_FILE}")
-elif excel_bytes is None:
-    st.warning(f"No Excel file found. Upload via sidebar or add '{DEFAULT_FILE}' to repo.")
-
-# helper to return a fresh file-like object or file path each time pandas needs it
 def get_fileobj():
-    if excel_bytes is not None:
-        return io.BytesIO(excel_bytes)
+    """
+    Returns a file-like object or file path for pandas to read.
+    Prioritizes repo Excel, but will use uploaded file if provided.
+    """
+    if os.path.exists(DEFAULT_FILE):
+        if uploaded_file is not None:
+            st.info("Using uploaded Excel file (overrides repo default).")
+            return io.BytesIO(uploaded_file.read())
+        else:
+            st.info(f"Using default Excel from repo: {DEFAULT_FILE}")
+            return DEFAULT_FILE
     else:
-        return DEFAULT_FILE
+        if uploaded_file is not None:
+            st.warning("Repo Excel not found; using uploaded Excel file instead.")
+            return io.BytesIO(uploaded_file.read())
+        else:
+            st.error(f"No Excel file found. Please add '{DEFAULT_FILE}' to the repo or upload via sidebar.")
+            return None
 
 # ---------------------------
 # Only proceed if Excel exists
 # ---------------------------
+xls_obj = get_fileobj()
+if xls_obj is None:
+    st.stop()
+
 # Attempt to read sheet names
-all_sheets = []
 try:
-    xls_obj = get_fileobj()
     xls = pd.ExcelFile(xls_obj)
     all_sheets = xls.sheet_names
 except Exception:
@@ -148,7 +148,6 @@ if selected_sheets:
         try:
             df = pd.read_excel(get_fileobj(), sheet_name=sheet_name, dtype=object)
         except Exception:
-            # skip unreadable sheets
             continue
         if df is None or df.empty:
             continue
@@ -171,7 +170,6 @@ if selected_sheets:
             if c and c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        # Safe Date Parsing
         possible_date_cols = ["Date", "Snapshot Date", "Date Recorded", "Reading Date", "Date/Time"]
         found_date_col = next((col for col in possible_date_cols if col in df.columns), None)
 
@@ -187,7 +185,6 @@ if selected_sheets:
             if c and c in df.columns:
                 df[c] = df[c].ffill().bfill()
 
-        # Summary per equipment
         summary_df = df.groupby("Equipment").tail(1)
         sheet_canon = pd.DataFrame(index=summary_df.index)
         sheet_canon["Equipment"] = summary_df["Equipment"]
@@ -203,7 +200,7 @@ if selected_sheets:
         combined_rows.append({"summary": sheet_canon, "trend": df})
 
     # ---------------------------
-    # Dashboard Summary
+    # Dashboard Summary & Issues
     # ---------------------------
     if combined_rows:
         summary_df_all = pd.concat([x["summary"] for x in combined_rows], ignore_index=True)
@@ -238,56 +235,34 @@ if selected_sheets:
         st.subheader("📋 Summary (latest row per equipment)")
         st.dataframe(summary_df_all.drop(columns=["Snapshot Date"], errors="ignore").style.apply(highlight, axis=1))
 
-        # ---------------------------
-        # Generate Issue List (fixed & color-coded)
-        # ---------------------------
-        issues = []  # list of dicts { "msg":..., "color": "red"/"yellow"/"normal" }
+        # Generate Issue List
+        issues = []
         for _, row in summary_df_all.iterrows():
             equip = row.get("Equipment", "Unknown")
-
-            # Hours Left -> Overdue (red) or Service due soon (yellow)
             if "Hours Left" in row and pd.notnull(row["Hours Left"]):
-                try:
-                    hl = float(row["Hours Left"])
-                    if hl <= 0:
-                        issues.append({"msg": f"{equip}: Overdue", "color": "red"})
-                    elif hl <= DUE_SOON_HOURS:
-                        issues.append({"msg": f"{equip}: Service due soon", "color": "yellow"})
-                except:
-                    pass
+                hl = float(row["Hours Left"])
+                if hl <= 0:
+                    issues.append({"msg": f"{equip}: Overdue", "color": "red"})
+                elif hl <= DUE_SOON_HOURS:
+                    issues.append({"msg": f"{equip}: Service due soon", "color": "yellow"})
 
-            # Dew point (inbuilt)
             if "Dew point (inbuilt)" in row and pd.notnull(row["Dew point (inbuilt)"]):
-                try:
-                    val = float(row["Dew point (inbuilt)"])
-                    if not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
-                        issues.append({"msg": f"{equip}: Dewpoint out of range (inbuilt) - drier not efficient or faulty", "color": "red"})
-                except:
-                    pass
+                val = float(row["Dew point (inbuilt)"])
+                if not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
+                    issues.append({"msg": f"{equip}: Dewpoint out of range (inbuilt)", "color": "red"})
 
-            # Dew point (external)
             if "Dew point (external)" in row and pd.notnull(row["Dew point (external)"]):
-                try:
-                    val = float(row["Dew point (external)"])
-                    if not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
-                        issues.append({"msg": f"{equip}: Dewpoint out of range (external) - drier not efficient or faulty", "color": "red"})
-                except:
-                    pass
+                val = float(row["Dew point (external)"])
+                if not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
+                    issues.append({"msg": f"{equip}: Dewpoint out of range (external)", "color": "red"})
 
-            # Element Temp
             if "Element Temp" in row and pd.notnull(row["Element Temp"]):
-                try:
-                    val = float(row["Element Temp"])
-                    # Red critical
-                    if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
-                        issues.append({"msg": f"{equip}: Element Temp high high", "color": "red"})
-                    # Yellow warning
-                    elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
-                        issues.append({"msg": f"{equip}: Element Temp high", "color": "yellow"})
-                except:
-                    pass
+                val = float(row["Element Temp"])
+                if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
+                    issues.append({"msg": f"{equip}: Element Temp high high", "color": "red"})
+                elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
+                    issues.append({"msg": f"{equip}: Element Temp high", "color": "yellow"})
 
-        # Display color-coded issues
         if issues:
             st.subheader("⚠️ Equipment Issues")
             for issue in issues:
@@ -302,9 +277,6 @@ if selected_sheets:
         else:
             st.info("No issues detected.")
 
-        # ---------------------------
-        # Save Snapshot to History
-        # ---------------------------
         if save_history:
             snapshot = summary_df_all.copy()
             snapshot["Archive Date"] = pd.to_datetime(datetime.now())
