@@ -102,35 +102,49 @@ trend_x_axis = st.sidebar.radio("X-axis for trend", ["Snapshot Date", "Run hours
 st.title("📊 Equipment Dashboard")
 
 # ---------------------------
-# Excel file helper
+# Read uploaded file once (if any) and decide source
 # ---------------------------
-def get_fileobj():
-    if os.path.exists(DEFAULT_FILE):
-        if uploaded_file is not None:
-            st.info("Using uploaded Excel file (overrides repo default).")
-            return io.BytesIO(uploaded_file.read())
-        else:
-            st.info(f"Using default Excel from repo: {DEFAULT_FILE}")
-            return DEFAULT_FILE
+excel_bytes = None
+if uploaded_file is not None:
+    try:
+        uploaded_file.seek(0)
+        excel_bytes = uploaded_file.read()
+    except Exception:
+        excel_bytes = None
+
+# Choose source and create xls_obj (keep same object for all reads)
+if os.path.exists(DEFAULT_FILE):
+    if excel_bytes is not None:
+        source = "uploaded"
+        xls_obj = io.BytesIO(excel_bytes)
     else:
-        if uploaded_file is not None:
-            st.warning("Repo Excel not found; using uploaded Excel file instead.")
-            return io.BytesIO(uploaded_file.read())
-        else:
-            st.error(f"No Excel file found. Please add '{DEFAULT_FILE}' to the repo or upload via sidebar.")
-            return None
+        source = "repo"
+        xls_obj = DEFAULT_FILE
+else:
+    if excel_bytes is not None:
+        source = "uploaded"
+        xls_obj = io.BytesIO(excel_bytes)
+    else:
+        st.error(f"No Excel file found. Please add '{DEFAULT_FILE}' to the repo or upload via sidebar.")
+        st.stop()
+
+# Show source message only once
+if source == "repo":
+    st.info(f"Using default Excel from repo: {DEFAULT_FILE}")
+else:
+    st.success("Using uploaded Excel file (overrides repo default).")
 
 # ---------------------------
-# Load Excel
+# Attempt to read sheet names
 # ---------------------------
-xls_obj = get_fileobj()
-if xls_obj is None:
-    st.stop()
-
 try:
+    # If BytesIO, make sure pointer at start
+    if isinstance(xls_obj, io.BytesIO):
+        xls_obj.seek(0)
     xls = pd.ExcelFile(xls_obj)
     all_sheets = xls.sheet_names
-except Exception:
+except Exception as e:
+    st.error(f"Unable to read Excel file: {e}")
     all_sheets = []
 
 with st.sidebar.expander("Select Sheets"):
@@ -139,34 +153,40 @@ with st.sidebar.expander("Select Sheets"):
 # ---------------------------
 # Download button for current Excel
 # ---------------------------
-if xls_obj is not None:
-    try:
-        if isinstance(xls_obj, str):
-            with open(xls_obj, "rb") as f:
-                excel_data = f.read()
-        else:
-            xls_obj.seek(0)
-            excel_data = xls_obj.read()
+try:
+    if isinstance(xls_obj, str):
+        with open(xls_obj, "rb") as f:
+            excel_data = f.read()
+    else:
+        xls_obj.seek(0)
+        excel_data = xls_obj.read()
 
-        st.download_button(
-            label="📥 Download current Excel",
-            data=excel_data,
-            file_name="EquipmentDashboard.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    except Exception as e:
-        st.error(f"Unable to prepare Excel for download: {e}")
+    st.download_button(
+        label="📥 Download current Excel",
+        data=excel_data,
+        file_name="EquipmentDashboard.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+except Exception as e:
+    st.error(f"Unable to prepare Excel for download: {e}")
 
 # ---------------------------
-# Process selected sheets
+# Process selected sheets (use the SAME xls_obj for all reads)
 # ---------------------------
+combined_rows = []
 if selected_sheets:
-    combined_rows = []
     for sheet_name in selected_sheets:
         try:
-            df = pd.read_excel(get_fileobj(), sheet_name=sheet_name, dtype=object)
+            # Ensure file-like is rewound before each read
+            if isinstance(xls_obj, io.BytesIO):
+                xls_obj.seek(0)
+                df = pd.read_excel(xls_obj, sheet_name=sheet_name, dtype=object)
+            else:
+                df = pd.read_excel(xls_obj, sheet_name=sheet_name, dtype=object)
         except Exception:
+            # skip unreadable sheets
             continue
+
         if df is None or df.empty:
             continue
 
@@ -258,28 +278,40 @@ if combined_rows:
     for _, row in summary_df_all.iterrows():
         equip = row.get("Equipment", "Unknown")
         if "Hours Left" in row and pd.notnull(row["Hours Left"]):
-            hl = float(row["Hours Left"])
-            if hl <= 0:
-                issues.append({"msg": f"{equip}: Overdue", "color": "red"})
-            elif hl <= DUE_SOON_HOURS:
-                issues.append({"msg": f"{equip}: Service due soon", "color": "yellow"})
+            try:
+                hl = float(row["Hours Left"])
+                if hl <= 0:
+                    issues.append({"msg": f"{equip}: Overdue", "color": "red"})
+                elif hl <= DUE_SOON_HOURS:
+                    issues.append({"msg": f"{equip}: Service due soon", "color": "yellow"})
+            except:
+                pass
 
         if "Dew point (inbuilt)" in row and pd.notnull(row["Dew point (inbuilt)"]):
-            val = float(row["Dew point (inbuilt)"])
-            if not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
-                issues.append({"msg": f"{equip}: Dewpoint out of range (inbuilt)", "color": "red"})
+            try:
+                val = float(row["Dew point (inbuilt)"])
+                if not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
+                    issues.append({"msg": f"{equip}: Dewpoint out of range (inbuilt)", "color": "red"})
+            except:
+                pass
 
         if "Dew point (external)" in row and pd.notnull(row["Dew point (external)"]):
-            val = float(row["Dew point (external)"])
-            if not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
-                issues.append({"msg": f"{equip}: Dewpoint out of range (external)", "color": "red"})
+            try:
+                val = float(row["Dew point (external)"])
+                if not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
+                    issues.append({"msg": f"{equip}: Dewpoint out of range (external)", "color": "red"})
+            except:
+                pass
 
         if "Element Temp" in row and pd.notnull(row["Element Temp"]):
-            val = float(row["Element Temp"])
-            if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
-                issues.append({"msg": f"{equip}: Element Temp high high", "color": "red"})
-            elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
-                issues.append({"msg": f"{equip}: Element Temp high", "color": "yellow"})
+            try:
+                val = float(row["Element Temp"])
+                if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
+                    issues.append({"msg": f"{equip}: Element Temp high high", "color": "red"})
+                elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
+                    issues.append({"msg": f"{equip}: Element Temp high", "color": "yellow"})
+            except:
+                pass
 
     if issues:
         st.subheader("⚠️ Equipment Issues")
