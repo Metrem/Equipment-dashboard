@@ -105,10 +105,6 @@ st.title("📊 Equipment Dashboard")
 # Excel file helper
 # ---------------------------
 def get_fileobj():
-    """
-    Returns a file-like object or file path for pandas to read.
-    Prioritizes repo Excel, but will use uploaded file if provided.
-    """
     if os.path.exists(DEFAULT_FILE):
         if uploaded_file is not None:
             st.info("Using uploaded Excel file (overrides repo default).")
@@ -125,13 +121,12 @@ def get_fileobj():
             return None
 
 # ---------------------------
-# Only proceed if Excel exists
+# Load Excel
 # ---------------------------
 xls_obj = get_fileobj()
 if xls_obj is None:
     st.stop()
 
-# Attempt to read sheet names
 try:
     xls = pd.ExcelFile(xls_obj)
     all_sheets = xls.sheet_names
@@ -141,9 +136,32 @@ except Exception:
 with st.sidebar.expander("Select Sheets"):
     selected_sheets = st.multiselect("Choose sheet(s) to display", options=all_sheets, default=all_sheets)
 
+# ---------------------------
+# Download button for current Excel
+# ---------------------------
+if xls_obj is not None:
+    try:
+        if isinstance(xls_obj, str):
+            with open(xls_obj, "rb") as f:
+                excel_data = f.read()
+        else:
+            xls_obj.seek(0)
+            excel_data = xls_obj.read()
+
+        st.download_button(
+            label="📥 Download current Excel",
+            data=excel_data,
+            file_name="EquipmentDashboard.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        st.error(f"Unable to prepare Excel for download: {e}")
+
+# ---------------------------
+# Process selected sheets
+# ---------------------------
 if selected_sheets:
     combined_rows = []
-
     for sheet_name in selected_sheets:
         try:
             df = pd.read_excel(get_fileobj(), sheet_name=sheet_name, dtype=object)
@@ -199,96 +217,94 @@ if selected_sheets:
 
         combined_rows.append({"summary": sheet_canon, "trend": df})
 
-    # ---------------------------
-    # Dashboard Summary & Issues
-    # ---------------------------
-    if combined_rows:
-        summary_df_all = pd.concat([x["summary"] for x in combined_rows], ignore_index=True)
-        summary_df_all.reset_index(drop=True, inplace=True)
-        summary_df_all.columns = clean_and_make_unique_columns(summary_df_all.columns)
+# ---------------------------
+# Summary, Issues, Trends
+# ---------------------------
+if combined_rows:
+    summary_df_all = pd.concat([x["summary"] for x in combined_rows], ignore_index=True)
+    summary_df_all.reset_index(drop=True, inplace=True)
+    summary_df_all.columns = clean_and_make_unique_columns(summary_df_all.columns)
 
-        def highlight(row):
-            styles = [''] * len(row)
-            for i, col in enumerate(row.index):
-                val = row[col]
-                if pd.isnull(val):
-                    continue
-                try:
-                    if col == "Dew point (inbuilt)" and not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
+    def highlight(row):
+        styles = [''] * len(row)
+        for i, col in enumerate(row.index):
+            val = row[col]
+            if pd.isnull(val):
+                continue
+            try:
+                if col == "Dew point (inbuilt)" and not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
+                    styles[i] = "background-color: red"
+                if col == "Dew point (external)" and not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
+                    styles[i] = "background-color: red"
+                if col == "Element Temp":
+                    if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
                         styles[i] = "background-color: red"
-                    if col == "Dew point (external)" and not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
+                    elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
+                        styles[i] = "background-color: yellow"
+                if col == "Hours Left":
+                    if val <= 0:
                         styles[i] = "background-color: red"
-                    if col == "Element Temp":
-                        if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
-                            styles[i] = "background-color: red"
-                        elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
-                            styles[i] = "background-color: yellow"
-                    if col == "Hours Left":
-                        if val <= 0:
-                            styles[i] = "background-color: red"
-                        elif val <= DUE_SOON_HOURS:
-                            styles[i] = "background-color: yellow"
-                except:
-                    pass
-            return styles
+                    elif val <= DUE_SOON_HOURS:
+                        styles[i] = "background-color: yellow"
+            except:
+                pass
+        return styles
 
-        st.subheader("📋 Summary (latest row per equipment)")
-        st.dataframe(summary_df_all.drop(columns=["Snapshot Date"], errors="ignore").style.apply(highlight, axis=1))
+    st.subheader("📋 Summary (latest row per equipment)")
+    st.dataframe(summary_df_all.drop(columns=["Snapshot Date"], errors="ignore").style.apply(highlight, axis=1))
 
-        # Generate Issue List
-        issues = []
-        for _, row in summary_df_all.iterrows():
-            equip = row.get("Equipment", "Unknown")
-            if "Hours Left" in row and pd.notnull(row["Hours Left"]):
-                hl = float(row["Hours Left"])
-                if hl <= 0:
-                    issues.append({"msg": f"{equip}: Overdue", "color": "red"})
-                elif hl <= DUE_SOON_HOURS:
-                    issues.append({"msg": f"{equip}: Service due soon", "color": "yellow"})
+    # Equipment Issues
+    issues = []
+    for _, row in summary_df_all.iterrows():
+        equip = row.get("Equipment", "Unknown")
+        if "Hours Left" in row and pd.notnull(row["Hours Left"]):
+            hl = float(row["Hours Left"])
+            if hl <= 0:
+                issues.append({"msg": f"{equip}: Overdue", "color": "red"})
+            elif hl <= DUE_SOON_HOURS:
+                issues.append({"msg": f"{equip}: Service due soon", "color": "yellow"})
 
-            if "Dew point (inbuilt)" in row and pd.notnull(row["Dew point (inbuilt)"]):
-                val = float(row["Dew point (inbuilt)"])
-                if not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
-                    issues.append({"msg": f"{equip}: Dewpoint out of range (inbuilt)", "color": "red"})
+        if "Dew point (inbuilt)" in row and pd.notnull(row["Dew point (inbuilt)"]):
+            val = float(row["Dew point (inbuilt)"])
+            if not (DEWPOINT_INBUILT_MIN <= val <= DEWPOINT_INBUILT_MAX):
+                issues.append({"msg": f"{equip}: Dewpoint out of range (inbuilt)", "color": "red"})
 
-            if "Dew point (external)" in row and pd.notnull(row["Dew point (external)"]):
-                val = float(row["Dew point (external)"])
-                if not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
-                    issues.append({"msg": f"{equip}: Dewpoint out of range (external)", "color": "red"})
+        if "Dew point (external)" in row and pd.notnull(row["Dew point (external)"]):
+            val = float(row["Dew point (external)"])
+            if not (DEWPOINT_EXTERNAL_MIN <= val <= DEWPOINT_EXTERNAL_MAX):
+                issues.append({"msg": f"{equip}: Dewpoint out of range (external)", "color": "red"})
 
-            if "Element Temp" in row and pd.notnull(row["Element Temp"]):
-                val = float(row["Element Temp"])
-                if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
-                    issues.append({"msg": f"{equip}: Element Temp high high", "color": "red"})
-                elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
-                    issues.append({"msg": f"{equip}: Element Temp high", "color": "yellow"})
+        if "Element Temp" in row and pd.notnull(row["Element Temp"]):
+            val = float(row["Element Temp"])
+            if ELEMENT_TEMP_TRIP_MIN <= val <= ELEMENT_TEMP_TRIP_MAX:
+                issues.append({"msg": f"{equip}: Element Temp high high", "color": "red"})
+            elif ELEMENT_TEMP_WARNING_MIN <= val <= ELEMENT_TEMP_WARNING_MAX:
+                issues.append({"msg": f"{equip}: Element Temp high", "color": "yellow"})
 
-        if issues:
-            st.subheader("⚠️ Equipment Issues")
-            for issue in issues:
-                msg = issue["msg"]
-                color = issue.get("color", "normal")
-                if color == "red":
-                    st.markdown(f"<span style='color:red; font-weight:bold;'>• {msg}</span>", unsafe_allow_html=True)
-                elif color == "yellow":
-                    st.markdown(f"<span style='color:orange; font-weight:bold;'>• {msg}</span>", unsafe_allow_html=True)
-                else:
-                    st.write(f"- {msg}")
-        else:
-            st.info("No issues detected.")
+    if issues:
+        st.subheader("⚠️ Equipment Issues")
+        for issue in issues:
+            msg = issue["msg"]
+            color = issue.get("color", "normal")
+            if color == "red":
+                st.markdown(f"<span style='color:red; font-weight:bold;'>• {msg}</span>", unsafe_allow_html=True)
+            elif color == "yellow":
+                st.markdown(f"<span style='color:orange; font-weight:bold;'>• {msg}</span>", unsafe_allow_html=True)
+            else:
+                st.write(f"- {msg}")
+    else:
+        st.info("No issues detected.")
 
-        if save_history:
-            snapshot = summary_df_all.copy()
-            snapshot["Archive Date"] = pd.to_datetime(datetime.now())
-            if os.path.exists(HISTORY_FILE):
-                history = pd.read_csv(HISTORY_FILE)
-                snapshot = pd.concat([history, snapshot], ignore_index=True)
-            snapshot.to_csv(HISTORY_FILE, index=False)
-            st.success(f"Snapshot saved to {HISTORY_FILE}")
+    if save_history:
+        snapshot = summary_df_all.copy()
+        snapshot["Archive Date"] = pd.to_datetime(datetime.now())
+        if os.path.exists(HISTORY_FILE):
+            history = pd.read_csv(HISTORY_FILE)
+            snapshot = pd.concat([history, snapshot], ignore_index=True)
+        snapshot.to_csv(HISTORY_FILE, index=False)
+        st.success(f"Snapshot saved to {HISTORY_FILE}")
 
-    # ---------------------------
-    # Trend per Equipment
-    # ---------------------------
+    # Trend Charts
     trend_df_all = pd.concat([x["trend"] for x in combined_rows], ignore_index=True)
     trend_df_all.reset_index(drop=True, inplace=True)
     trend_df_all.columns = clean_and_make_unique_columns(trend_df_all.columns)
