@@ -111,7 +111,7 @@ elif os.path.exists(DEFAULT_FILE):
     st.info(f"Using default Excel from repo: {DEFAULT_FILE}")
 else:
     excel_to_use = None
-    st.warning("No Excel file found. Upload via sidebar or add 'data.xlsx' to repo.")
+    st.warning("No Excel file found. Upload via sidebar or add 'Equipment Checklist December 2025.xlsx' to repo.")
 
 # ---------------------------
 # Only proceed if Excel exists
